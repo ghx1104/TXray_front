@@ -10,17 +10,52 @@ import { WorkflowVisualizer } from "@/components/WorkflowVisualizer";
 import { Message, ProgressEvent } from "@/types";
 import { cn } from "@/lib/utils";
 
+interface Conversation {
+  id: string;
+  title: string;
+  messages: Message[];
+  lastUpdate: number;
+}
+
 export default function Home() {
   const [input, setInput] = useState("");
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [currentConvId, setCurrentConvId] = useState<string | null>(null);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
+  // Load conversations from localStorage on mount
+  useEffect(() => {
+    const saved = localStorage.getItem('txray_conversations');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        setConversations(parsed);
+        if (parsed.length > 0) {
+          setCurrentConvId(parsed[0].id);
+        }
+      } catch (e) {
+        console.error('Failed to load conversations', e);
+      }
+    }
+  }, []);
+
+  // Save conversations to localStorage whenever they change
+  useEffect(() => {
+    if (conversations.length > 0) {
+      localStorage.setItem('txray_conversations', JSON.stringify(conversations));
+    }
+  }, [conversations]);
+
+  // Auto-scroll to bottom when messages change
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [messages]);
+  }, [currentConvId, conversations]);
+
+  const currentConv = conversations.find(c => c.id === currentConvId);
+  const messages = currentConv?.messages || [];
 
   const handleSend = async (text?: string) => {
     const messageText = text || input;
@@ -32,7 +67,16 @@ export default function Home() {
       content: messageText,
     };
 
-    setMessages((prev) => [...prev, userMessage]);
+    // Add user message to current conversation
+    setConversations(prev => {
+      const updated = prev.map(c => 
+        c.id === currentConvId 
+          ? { ...c, messages: [...c.messages, userMessage], lastUpdate: Date.now() }
+          : c
+      );
+      return updated;
+    });
+
     setInput("");
     setIsAnalyzing(true);
 
@@ -45,14 +89,25 @@ export default function Home() {
       progress: [],
     };
 
-    setMessages((prev) => [...prev, assistantMessage]);
+    // Add assistant placeholder
+    setConversations(prev => {
+      const updated = prev.map(c =>
+        c.id === currentConvId
+          ? { ...c, messages: [...c.messages, assistantMessage], lastUpdate: Date.now() }
+          : c
+      );
+      return updated;
+    });
 
     try {
       const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:3001";
       const response = await fetch(`${backendUrl}/api/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: messageText }),
+        body: JSON.stringify({ 
+          message: messageText,
+          conversationId: currentConvId || undefined
+        }),
       });
 
       if (!response.body) throw new Error("No response body");
@@ -87,48 +142,170 @@ export default function Home() {
             }
           }
 
-          if (data) {
-            setMessages((prev) => prev.map((msg) => {
-              if (msg.id === assistantMessageId) {
-                const newProgress = [...(msg.progress || [])];
-                if (eventType !== 'draft_chunk') {
-                  newProgress.push({ type: eventType as any, payload: data });
-                }
+          // Log received SSE events (skip token to avoid noise)
+          if (data && eventType !== 'token') {
+            const dataStr = JSON.stringify(data).slice(0, 200);
+            console.log(`[Frontend SSE] event=${eventType} data=${dataStr}${dataStr.length >= 200 ? '...(truncated)' : ''}`);
+          }
 
-                let newContent = msg.content;
-                if (eventType === 'draft_chunk') {
-                  accumulatedContent += data.content || "";
-                  newContent = accumulatedContent;
-                } else if (eventType === 'message_end') {
-                  newContent = data.content;
-                  return { ...msg, content: newContent, status: 'completed', report: data.report, progress: newProgress };
-                }
-
-                return { ...msg, content: newContent, progress: newProgress };
+          // Capture session event to update conversationId
+          if (eventType === 'session' && data?.conversationId) {
+            const newConvId = data.conversationId;
+            setConversations(prev => {
+              // If this is a new conversation, create it
+              if (!prev.find(c => c.id === newConvId)) {
+                const newConv: Conversation = {
+                  id: newConvId,
+                  title: `Chat ${new Date().toLocaleTimeString()}`,
+                  messages: [userMessage, assistantMessage],
+                  lastUpdate: Date.now()
+                };
+                setCurrentConvId(newConvId);
+                return [newConv, ...prev];
               }
-              return msg;
+              // Otherwise update the existing one's ID if needed
+              if (currentConvId && currentConvId !== newConvId) {
+                setCurrentConvId(newConvId);
+                return prev.map(c => c.id === currentConvId ? { ...c, id: newConvId } : c);
+              }
+              return prev;
+            });
+          }
+
+          if (data) {
+            setConversations((prev) => prev.map((conv) => {
+              if (conv.id === currentConvId) {
+                const updatedMessages = conv.messages.map((msg) => {
+                  if (msg.id === assistantMessageId) {
+                    const newProgress = [...(msg.progress || [])];
+                    if (eventType !== 'draft_chunk' && eventType !== 'session') {
+                      newProgress.push({ type: eventType as any, payload: data });
+                    }
+
+                    let newContent = msg.content;
+                    if (eventType === 'token') {
+                      // Stream tokens from LLM
+                      accumulatedContent += data.content || "";
+                      newContent = accumulatedContent;
+                    } else if (eventType === 'draft_chunk') {
+                      accumulatedContent += data.content || "";
+                      newContent = accumulatedContent;
+                    } else if (eventType === 'message_end') {
+                      newContent = data.content;
+                      return { ...msg, content: newContent, status: 'completed' as const, report: data.report, progress: newProgress };
+                    }
+
+                    return { ...msg, content: newContent, progress: newProgress };
+                  }
+                  return msg;
+                });
+                return { ...conv, messages: updatedMessages, lastUpdate: Date.now() };
+              }
+              return conv;
             }));
           }
         }
       }
     } catch (error) {
       console.error("Analysis failed:", error);
-      setMessages((prev) => prev.map((msg) => 
-        msg.id === assistantMessageId ? { ...msg, status: 'error', content: "Analysis failed. Please check the backend connection." } : msg
+      setConversations((prev) => prev.map((conv) => 
+        conv.id === currentConvId 
+          ? { 
+              ...conv, 
+              messages: conv.messages.map(msg =>
+                msg.id === assistantMessageId 
+                  ? { ...msg, status: 'error', content: "Analysis failed. Please check the backend connection." } 
+                  : msg
+              )
+            }
+          : conv
       ));
     } finally {
       setIsAnalyzing(false);
     }
   };
 
+  const handleNewConversation = () => {
+    const newConv: Conversation = {
+      id: `temp_${Date.now()}`,
+      title: `New Chat`,
+      messages: [],
+      lastUpdate: Date.now()
+    };
+    setConversations(prev => [newConv, ...prev]);
+    setCurrentConvId(newConv.id);
+  };
+
+  const handleSwitchConversation = (convId: string) => {
+    setCurrentConvId(convId);
+  };
+
+  const handleDeleteConversation = (convId: string) => {
+    setConversations(prev => {
+      const filtered = prev.filter(c => c.id !== convId);
+      if (currentConvId === convId && filtered.length > 0) {
+        setCurrentConvId(filtered[0].id);
+      } else if (filtered.length === 0) {
+        setCurrentConvId(null);
+      }
+      return filtered;
+    });
+  };
+
   return (
-    <main className="flex flex-col h-screen bg-[#050505] text-white overflow-hidden relative">
+    <main className="flex h-screen bg-[#050505] text-white overflow-hidden relative">
       {/* Background Effects */}
       <div className="fixed inset-0 bg-[radial-gradient(circle_at_50%_50%,_rgba(112,0,255,0.05),_transparent)] pointer-events-none" />
       <div className="fixed inset-0 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-20 pointer-events-none brightness-100" />
       
-      {/* Header */}
-      <header className="flex items-center justify-between px-8 py-5 border-b border-white/5 bg-black/40 backdrop-blur-xl z-50">
+      {/* Sidebar - Conversation List */}
+      <aside className="w-64 border-r border-white/5 bg-black/40 backdrop-blur-xl flex flex-col z-50">
+        <div className="p-4 border-b border-white/5">
+          <button
+            onClick={handleNewConversation}
+            className="w-full px-4 py-2 bg-[#00ffcc]/10 hover:bg-[#00ffcc]/20 border border-[#00ffcc]/20 rounded-lg text-[#00ffcc] text-sm font-mono tracking-wider transition-all"
+          >
+            + NEW CHAT
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-2">
+          {conversations.map((conv) => (
+            <div
+              key={conv.id}
+              onClick={() => handleSwitchConversation(conv.id)}
+              className={cn(
+                "p-3 mb-2 rounded-lg cursor-pointer transition-all group",
+                currentConvId === conv.id
+                  ? "bg-[#00ffcc]/10 border border-[#00ffcc]/20"
+                  : "bg-white/[0.02] hover:bg-white/[0.05] border border-transparent"
+              )}
+            >
+              <div className="flex justify-between items-center">
+                <span className="text-xs font-mono truncate flex-1">
+                  {conv.title}
+                </span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleDeleteConversation(conv.id);
+                  }}
+                  className="opacity-0 group-hover:opacity-100 text-white/40 hover:text-red-400 text-xs ml-2"
+                >
+                  ×
+                </button>
+              </div>
+              <div className="text-[9px] text-white/30 mt-1">
+                {conv.messages.length} messages
+              </div>
+            </div>
+          ))}
+        </div>
+      </aside>
+
+      {/* Main Content */}
+      <div className="flex-1 flex flex-col">
+        {/* Header */}
+        <header className="flex items-center justify-between px-8 py-5 border-b border-white/5 bg-black/40 backdrop-blur-xl z-50">
         <div className="flex items-center gap-4">
           <div className="w-12 h-12 bg-[#00ffcc] rounded-xl flex items-center justify-center shadow-[0_0_30px_rgba(0,255,204,0.3)] group transition-all duration-500 hover:scale-110">
             <Zap className="text-black" size={28} fill="currentColor" />
@@ -151,7 +328,7 @@ export default function Home() {
         </div>
       </header>
 
-      {/* Main Content */}
+      {/* Chat Messages */}
       <div className="flex-1 overflow-y-auto p-6 md:p-12 space-y-10 scanline relative scroll-smooth" ref={scrollRef}>
         <AnimatePresence mode="wait">
           {messages.length === 0 ? (
@@ -334,6 +511,7 @@ export default function Home() {
             <span className="flex items-center gap-1"><div className="w-1 h-1 rounded-full bg-[#00ffcc]" /> AI OK</span>
           </div>
         </div>
+      </div>
       </div>
     </main>
   );
