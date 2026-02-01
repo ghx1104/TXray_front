@@ -447,7 +447,9 @@ export default function Home() {
       });
 
       if (!res.ok) {
-        throw new Error('Failed to get transaction parameters');
+        const errBody = await res.json().catch(() => ({}));
+        const message = errBody.error || errBody.message || `Server error: ${res.status}`;
+        throw new Error(message);
       }
 
       const { to, data, value } = await res.json();
@@ -862,6 +864,13 @@ export default function Home() {
           >
             <Shield size={12} />
             {adminToken ? "ADMIN ACTIVE" : "ADMIN ACCESS"}
+          </button>
+          <button
+            onClick={() => setFeedbackModal({ messageId: "test" })}
+            className="w-full px-4 py-2 border border-[#ffcc00]/20 rounded-lg text-[#ffcc00]/80 text-xs font-mono tracking-wider transition-all flex items-center justify-center gap-2 hover:bg-[#ffcc00]/10"
+          >
+            <Star size={12} />
+            Test Rating
           </button>
         </div>
         <div className="flex-1 overflow-y-auto p-2">
