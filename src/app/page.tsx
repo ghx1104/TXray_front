@@ -19,8 +19,8 @@ import { X402Client } from "@coinbase/x402";
 /** Normalize block math: [ \... ] and \[ ... \] -> $$ ... $$ so remark-math can parse */
 function normalizeBlockMath(content: string): string {
   if (!content || typeof content !== "string") return content;
-  // [ \text{...} ] or [ \frac{...} ] etc. (single line)
-  let out = content.replace(/^\[\s*\\(.*?)\s*\]\s*$/gm, "$$ \\$1 $$");
+  // [ \text{...} ] or [ \frac{...} ] etc. (capture includes leading backslash)
+  let out = content.replace(/^\[\s*(\\.*?)\s*\]\s*$/gm, "$$ $1 $$");
   // \[ ... \] (standard LaTeX display math)
   out = out.replace(/\\\[\s*([\s\S]*?)\s*\\\]/g, "$$ $1 $$");
   return out;
@@ -1077,7 +1077,7 @@ export default function Home() {
                             ),
                           }}
                         >
-                          {msg.content}
+                          {normalizeBlockMath(msg.content)}
                         </ReactMarkdown>
                       </div>
 
