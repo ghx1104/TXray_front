@@ -361,7 +361,7 @@ export default function Home() {
 
   const handlePayment = async () => {
     if (!paymentRequired) return;
-
+    
     try {
       if (!(window as any).ethereum) {
         toast.error("Web3 Wallet Required", {
@@ -454,40 +454,32 @@ export default function Home() {
         params: [userAddress, JSON.stringify(typedData)],
       });
 
-      toast.loading("Submitting to facilitator...", { id: "x402_pay" });
+      toast.success("Signature collected!", { id: "x402_pay" });
 
-      // Submit to facilitator (openfacilitator.io)
-      const facilitatorResponse = await fetch('https://pay.openfacilitator.io/verify', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          signature,
+      // Construct x402-compliant payment payload
+      const x402Payload = {
+        x402Version: 1,
+        scheme: "exact",
+        network: "base",
+        payload: {
+          signature: signature,
           authorization: {
             from: userAddress,
             to: paymentRequired.recipient,
-            value: message.value,
-            validAfter: validAfter,
-            validBefore: validBefore,
+            value: message.value, // Already a string
+            validAfter: validAfter.toString(),
+            validBefore: validBefore.toString(),
             nonce: nonce
-          },
-          chainId: 8453,
-          token: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
-          resource: paymentRequired.reference
-        })
-      });
+          }
+        }
+      };
 
-      if (!facilitatorResponse.ok) {
-        const errorData = await facilitatorResponse.json().catch(() => ({}));
-        throw new Error(errorData.message || 'Facilitator verification failed');
-      }
+      // Convert to Base64-encoded JSON string for X-PAYMENT header
+      const paymentPayload = btoa(JSON.stringify(x402Payload));
 
-      const facilitatorData = await facilitatorResponse.json();
-      const payload = facilitatorData.payload || facilitatorData.proof || signature;
-
-      toast.success("Payment authorized!", { id: "x402_pay" });
-
-      // Retry with the facilitator's payload
-      handleSend(paymentRequired.retryData?.text, payload);
+      // Send directly to backend with X-PAYMENT header
+      // Backend will verify with facilitator or validate the signature itself
+      handleSend(paymentRequired.retryData?.text, paymentPayload);
       setPaymentRequired(null);
 
     } catch (error: any) {
