@@ -192,27 +192,19 @@ const slides: Slide[] = [
   },
   {
     id: 5,
-    title: "Key Features",
-    type: "columns",
-    columns: [
-      {
-        icon: <Search className="w-6 h-6 mb-2 text-[#00ffcc]" />,
-        title: "Explainable Evidence",
-        items: ["RPC raw tx/receipt", "Etherscan ABI/Source", "Tenderly Invocation Tree"],
-      },
-      {
-        icon: <Activity className="w-6 h-6 mb-2 text-[#00ffcc]" />,
-        title: "Real-time UX",
-        items: ["SSE progress updates", "Token streaming", "Timeline visualization"],
-      },
-      {
-        icon: <Shield className="w-6 h-6 mb-2 text-[#00ffcc]" />,
-        title: "Productization",
-        items: ["EIP-8004 Reputation", "x402 Payment Gate", "Env Config (Local/Prod)"],
-      },
+    title: "Key Takeaways",
+    type: "summary",
+    summary: "Five things TXray delivers, end-to-end.",
+    steps: [
+      "LangGraph-driven agent: Reliable Enrich → Explain → Verify loop",
+      "Timeline-driven pipeline: Real-time progress via SSE stream",
+      "Evidence-first drilldown: Invocation Flow / Call List / Raw Trace",
+      "Product-ready: EIP-8004 reputation + x402 paywall",
+      "Live Experience: https://txray.vercel.app/",
     ],
+    closing: "",
     notes:
-      "TXray is not just a demo. On the data side, it integrates deep Tenderly traces; on the product side, it adds EIP-8004 reputation feedback and an x402 pay-per-request gate — making it closer to production and monetization.",
+      "This slide is the punchline: LangGraph for orchestration, SSE for real-time UX, evidence drilldown for trust, and productization via EIP-8004 + x402. End with the live link.",
   },
   {
     id: 6,
@@ -243,17 +235,12 @@ const slides: Slide[] = [
     id: 7,
     title: "Summary",
     type: "summary",
-    summary: "TXray turns a tx hash into a real-time, evidence-backed explanation.",
-    steps: [
-      "LangGraph-driven agent: Reliable Enrich -> Explain -> Verify loop",
-      "Timeline-driven pipeline: Real-time progress via SSE stream",
-      "Evidence-first drilldown: Invocation Flow / Call List / Raw Trace",
-      "Product-ready: EIP-8004 reputation + x402 paywall",
-      "Live Experience: https://txray.vercel.app/",
-    ],
-    closing: "Try it now: txray.vercel.app",
+    summary:
+      "TXray is a LangGraph-driven, real-time, evidence-first MEV analyzer with EIP-8004 reputation and x402 pay-per-request — try it at txray.vercel.app.",
+    steps: [],
+    closing: "",
     notes:
-      "Wrap-up: TXray combines streaming UX with verifiable evidence to make on-chain forensics fast and trustworthy. By using LangGraph, we ensure the AI's logic is grounded in actual chain data.",
+      "One-sentence wrap-up only. Mention EIP-8004 + x402 briefly. Then move to Q&A.",
   },
   {
     id: 8,
@@ -640,19 +627,25 @@ export default function SlidesPage() {
                 <div className="flex-1 overflow-y-auto custom-scrollbar pr-2 flex flex-col justify-center max-w-2xl mx-auto w-full">
                   <div className="mb-8">
                     <h3 className="text-2xl text-white mb-6 leading-relaxed">"{slide.summary}"</h3>
-                    <div className="space-y-4">
-                      <div className="text-xs text-[#00ffcc] uppercase tracking-widest mb-2">Key Takeaways</div>
-                      {slide.steps.map((step, i) => (
-                        <div key={i} className="flex items-center gap-4 p-3 bg-[#111] border border-[#222] rounded">
-                          <div className="w-6 h-6 rounded-full bg-[#222] flex items-center justify-center text-xs text-gray-500">{i + 1}</div>
-                          <span className="text-sm">{step}</span>
-                        </div>
-                      ))}
+
+                    {slide.steps.length > 0 && (
+                      <div className="space-y-4">
+                        <div className="text-xs text-[#00ffcc] uppercase tracking-widest mb-2">Key Takeaways</div>
+                        {slide.steps.map((step, i) => (
+                          <div key={i} className="flex items-center gap-4 p-3 bg-[#111] border border-[#222] rounded">
+                            <div className="w-6 h-6 rounded-full bg-[#222] flex items-center justify-center text-xs text-gray-500">{i + 1}</div>
+                            <span className="text-sm">{step}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {slide.closing && (
+                    <div className="mt-8 pt-8 border-t border-[#222] text-center">
+                      <div className="text-[#00ffcc] animate-pulse font-bold text-lg">{slide.closing}</div>
                     </div>
-                  </div>
-                  <div className="mt-8 pt-8 border-t border-[#222] text-center">
-                    <div className="text-[#00ffcc] animate-pulse font-bold text-lg">{slide.closing}</div>
-                  </div>
+                  )}
                 </div>
               )}
 
