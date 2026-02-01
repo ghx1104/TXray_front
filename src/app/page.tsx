@@ -61,6 +61,9 @@ export default function Home() {
     const messageText = text || input;
     if (!messageText.trim() || isAnalyzing) return;
 
+    // Use a local variable to store the target conversation ID
+    let targetConvId = currentConvId;
+
     const userMessage: Message = {
       id: Date.now().toString(),
       role: "user",
@@ -69,8 +72,21 @@ export default function Home() {
 
     // Add user message to current conversation
     setConversations(prev => {
+      // If there's no current conversation, create one
+      if (!targetConvId) {
+        targetConvId = `temp_${Date.now()}`;
+        const newConv: Conversation = {
+          id: targetConvId,
+          title: messageText.slice(0, 20) + (messageText.length > 20 ? "..." : ""),
+          messages: [userMessage],
+          lastUpdate: Date.now()
+        };
+        setCurrentConvId(targetConvId);
+        return [newConv, ...prev];
+      }
+
       const updated = prev.map(c => 
-        c.id === currentConvId 
+        c.id === targetConvId 
           ? { ...c, messages: [...c.messages, userMessage], lastUpdate: Date.now() }
           : c
       );
@@ -92,7 +108,7 @@ export default function Home() {
     // Add assistant placeholder
     setConversations(prev => {
       const updated = prev.map(c =>
-        c.id === currentConvId
+        c.id === targetConvId
           ? { ...c, messages: [...c.messages, assistantMessage], lastUpdate: Date.now() }
           : c
       );
@@ -106,7 +122,7 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ 
           message: messageText,
-          conversationId: currentConvId || undefined
+          conversationId: targetConvId && !targetConvId.startsWith('temp_') ? targetConvId : undefined
         }),
       });
 
@@ -156,17 +172,20 @@ export default function Home() {
               if (!prev.find(c => c.id === newConvId)) {
                 const newConv: Conversation = {
                   id: newConvId,
-                  title: `Chat ${new Date().toLocaleTimeString()}`,
+                  title: messageText.slice(0, 20) + (messageText.length > 20 ? "..." : ""),
                   messages: [userMessage, assistantMessage],
                   lastUpdate: Date.now()
                 };
                 setCurrentConvId(newConvId);
-                return [newConv, ...prev];
+                targetConvId = newConvId; // Update local tracker
+                return [newConv, ...prev.filter(c => !c.id.startsWith('temp_'))];
               }
               // Otherwise update the existing one's ID if needed
-              if (currentConvId && currentConvId !== newConvId) {
+              if (targetConvId && targetConvId !== newConvId) {
                 setCurrentConvId(newConvId);
-                return prev.map(c => c.id === currentConvId ? { ...c, id: newConvId } : c);
+                const updated = prev.map(c => c.id === targetConvId ? { ...c, id: newConvId } : c);
+                targetConvId = newConvId; // Update local tracker
+                return updated;
               }
               return prev;
             });
@@ -174,7 +193,7 @@ export default function Home() {
 
           if (data) {
             setConversations((prev) => prev.map((conv) => {
-              if (conv.id === currentConvId) {
+              if (conv.id === targetConvId) {
                 const updatedMessages = conv.messages.map((msg) => {
                   if (msg.id === assistantMessageId) {
                     const newProgress = [...(msg.progress || [])];
@@ -209,7 +228,7 @@ export default function Home() {
     } catch (error) {
       console.error("Analysis failed:", error);
       setConversations((prev) => prev.map((conv) => 
-        conv.id === currentConvId 
+        conv.id === targetConvId 
           ? { 
               ...conv, 
               messages: conv.messages.map(msg =>
