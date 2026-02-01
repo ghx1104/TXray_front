@@ -115,7 +115,7 @@ const slides: Slide[] = [
     type: "title",
     tagline: "X-ray vision for on-chain transactions",
     subtitle: "Tx hash → Explanation + Evidence, in real time",
-    footer: "Team: NVRGVUP | Authors: ddd999, Link | University of Chinese Academy of Sciences | Date: 2026-02-02",
+    footer: "Team: NVRGVUP | Authors: ddd009, Link | University of Chinese Academy of Sciences | Date: 2026-02-02",
     notes:
       "Hi everyone, I’m [Name]. Today I’ll introduce TXray — a real-time Ethereum transaction analysis agent. Paste a tx hash and instantly get a readable report backed by a verifiable evidence trail (RPC/Etherscan/Tenderly).",
   },
