@@ -361,7 +361,7 @@ export default function Home() {
 
   const handlePayment = async () => {
     if (!paymentRequired) return;
-    
+
     try {
       if (!(window as any).ethereum) {
         toast.error("Web3 Wallet Required", {
