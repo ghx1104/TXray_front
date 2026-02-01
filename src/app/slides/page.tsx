@@ -86,26 +86,26 @@ const slides: Slide[] = [
     subtitle: "Tx hash → Explanation + Evidence, in real time",
     footer: "Author: DevTeam | Date: 2024 | v1.0",
     notes:
-      "大家好，我是[名字]。今天向大家介绍 TXray —— 一个针对以太坊交易的实时分析 Agent。我们致力于解决链上数据晦涩难懂的问题，通过输入一个哈希，即刻生成带有完整证据链的易读研报。",
+      "Hi everyone, I’m [Name]. Today I’ll introduce TXray — a real-time Ethereum transaction analysis agent. Paste a tx hash and instantly get a readable report backed by a verifiable evidence trail (RPC/Etherscan/Tenderly).",
   },
   {
     id: 2,
     title: "Problem & Goal",
     type: "split",
-    leftTitle: "The Friction (痛点)",
+    leftTitle: "The Friction",
     leftPoints: [
-      "Tx hashes are hard to understand (如同天书)",
+      "Tx hashes are hard to understand",
       "Deep call stacks require multiple tools (RPC + Etherscan + Tenderly)",
-      "Explanations without evidence are untrustworthy (AI 幻觉)",
+      "Explanations without evidence are untrustworthy",
     ],
-    rightTitle: "Our Solution (目标)",
+    rightTitle: "Our Solution)",
     rightPoints: [
-      "One input: Tx Hash (单一入口)",
-      "Real-time progress timeline (实时反馈)",
-      "Explanation aligned with trace evidence (证据对齐)",
+      "One input: Tx Hash",
+      "Real-time progress timeline",
+      "Explanation aligned with trace evidence",
     ],
     notes:
-      "传统分析需要在不同浏览器和调试工具间跳转，效率低下且难以验证 AI 解释的真实性。TXray 的目标是统一入口，让自然语言解释与底层证据（Evidence）严格对齐，所见即所得。",
+      "Traditional tx analysis requires switching between multiple tools and manually piecing the story together. It’s slow and explanations are hard to trust without evidence. TXray unifies the workflow and keeps the narrative aligned with trace-level evidence.",
   },
   {
     id: 3,
@@ -118,7 +118,7 @@ const slides: Slide[] = [
     ],
     script: ["1. Paste Tx Hash", "2. Watch Timeline Run", "3. Open Tenderly Flow", "4. View RPC Details"],
     notes:
-      "(演示环节) 随着 Timeline 的推进，后台并行抓取 RPC 和 Tenderly 数据。用户不仅能看到 AI 的解释，还能点击步骤查看具体的 Call Trace 树状图，数据实时流式传输。",
+      "(Demo) As the timeline runs, the backend fetches RPC/Etherscan/Tenderly data in parallel. The UI streams progress and content in real time, and you can click each step to drill down into the evidence (call trace, ABI, internal txs).",
   },
   {
     id: 4,
@@ -127,7 +127,7 @@ const slides: Slide[] = [
     highlight: "Evidence-first Pipeline",
     events: ["rpc_done", "etherscan_done", "tenderly_done", "token", "message_end"],
     notes:
-      "架构核心基于 SSE 实现服务端推送。后端 Express 编排 RPC、Etherscan 和 Tenderly 的并发请求，确保前端能按 rpc_done 等事件实时渲染进度，而非枯燥等待。",
+      "The system uses SSE (Server-Sent Events) so the backend can push progress updates to the frontend over a single HTTP stream. Express orchestrates RPC/Etherscan/Tenderly and emits events like rpc_done / tenderly_done for real-time rendering.",
   },
   {
     id: 5,
@@ -151,10 +151,28 @@ const slides: Slide[] = [
       },
     ],
     notes:
-      "TXray 不仅仅是一个 Demo。我们在数据层整合了 Tenderly 的深度 Trace，在产品层集成了 EIP-8004 反馈机制和 x402 支付网关，具备了商业化落地的雏形。",
+      "TXray is not just a demo. On the data side, it integrates deep Tenderly traces; on the product side, it adds EIP-8004 reputation feedback and an x402 pay-per-request gate — making it closer to production and monetization.",
   },
   {
     id: 6,
+    title: "Development Challenges",
+    type: "summary",
+    summary: "What went wrong during development (and how we fixed it).",
+    steps: [
+      "LLM struggled with complex nested call traces (50–150 internal calls)",
+      "LangGraph state dropped fields not declared in StateAnnotation",
+      "Verification false positives when internal ETH flows were missing from ground truth",
+      "x402 header must be base64-encoded JSON (raw JSON caused invalid character errors)",
+      "Call trace display showed undefined due to wrong trace root passed to flattener",
+      "Old txs failed on non-archive public RPCs (receipt not found)",
+      "Conversation context issues (empty messages / streaming fallback needed)",
+    ],
+    closing: "Outcome: more robust pipeline and clearer evidence alignment.",
+    notes:
+      "### 1. LLM Struggling with Complex Call Traces (Main Challenge)\n\n**Problem**: For transactions with many nested contract calls (e.g. 50–150 internal calls), the LLM often failed to follow the execution flow. It would infer generic behavior (e.g. “swap step”, “token transfer”) instead of using the actual call structure, and sometimes made up flows that did not match the trace.\n\n**Why it happens**:\n- The call trace is a recursive tree (CALL → subcalls → sub-subcalls) while the model sees a flattened list\n- It has no stable mapping from selectors to function names, so it guesses from common patterns\n- Cross-call state and side effects (e.g. WETH unwrap → ETH transfer) are easy to miss\n- Long sequences cause the model to drop or compress parts of the trace\n\n**What we tried**:\n- **Address enrichment** — Fetch labels/ABI for addresses in the trace so the model sees “Uniswap V3 Router” instead of `0x68b346...`\n- **Structured prompts** — Split trace data into clear sections: token flows, internal calls, Etherscan internal txs, Tenderly trace\n- **Call trace explanation node** — A separate LLM pass that explains each call step-by-step, then feeds that into the main draft as reference\n- **Fact verification node** — Compare the draft with token flows and call trace to catch hallucinations\n\n**Outcome**: The multi-node pipeline (call trace enrich → explain → draft → verify) improved consistency, but complex multi-hop MEV txs still require careful prompting and verification. The model remains better at summarizing high-level flows than at correctly inferring every internal step from raw traces.\n\n---\n\n### 2. LangGraph State Dropping Critical Data\n\n**Problem**: Call trace explanation and Tenderly trace were produced correctly, but the draft node often received empty or incomplete data. The LLM sometimes reported \"No call trace available\" despite successful trace fetching.\n\n**Root cause**: LangGraph's `StateAnnotation` only declared a subset of fields. Any field not listed was dropped when state passed between nodes.\n\n**Solution**: Extended `StateAnnotation` to include every field used in the pipeline (`tenderlyCallTrace`, `callTraceExplanation`, `etherscanInternalTxs`, `addressLabels`, etc.), so state is preserved across nodes.\n\n---\n\n### 3. Fact Verification False Positives\n\n**Problem**: The verification step flagged correct statements as errors. For example, when the user received 0.506 ETH from a WETH unwrap (via internal call), the verifier said \"wrong: user received ETH\" because the ground truth only used top-level `tx.value` (which was 0).\n\n**Root cause**: Ground truth was built only from token flows and top-level ETH. Internal ETH flows (e.g. WETH withdraw) were ignored.\n\n**Solution**: Updated `buildGroundTruth` to include internal ETH flows from Etherscan internal txs and Tenderly trace, and relaxed the verify prompt so it does not flag correct statements when the data supports them.\n\n---\n\n### 4. x402 Payment Header Parsing\n\n**Problem**: The frontend sent payment data in the `X-PAYMENT` header but got \"Invalid character\" errors.\n\n**Root cause**: The x402 middleware expects **base64-encoded JSON** in the header, not raw JSON.\n\n**Solution**: Base64-encode the payment object before putting it in the header and ensure the structure matches the spec (`x402Version`, `scheme`, `network`, `payload` with `signature` and `authorization`).\n\n---\n\n### 5. Call Trace Display Showing `undefined`\n\n**Problem**: CLI output showed `undefined: undefined... → undefined...` instead of addresses and function names.\n\n**Root cause**: `extractAllCallsForDisplay` was called with `tenderly.trace` (array) instead of the root call `tenderly.trace[0]`.\n\n**Solution**: Pass `tenderly.trace[0]` when flattening the trace for display.\n\n---\n\n### 6. Old Transactions Failing on Public RPCs\n\n**Problem**: Some historical transactions (e.g. from 2022) failed with `TransactionReceiptNotFoundError`.\n\n**Root cause**: Many free RPCs prune old state and are not archive nodes.\n\n**Solution**: Documented this limitation and recommended paid archive RPC or Etherscan proxy fallback for historical queries.\n\n---\n\n### 7. Agent Not Remembering Conversation Context\n\n**Problem**: In multi-turn chat, the agent sometimes returned empty replies or ignored previous messages.\n\n**Root cause**: Weak system prompt around chat history, empty messages passed to the LLM, and streaming sometimes failing to capture the final response.\n\n**Solution**: Strengthened the system prompt, filtered out empty messages, and added a fallback to capture `finalResponse` from `on_chain_end` when streaming missed it.",
+  },
+  {
+    id: 7,
     title: "Summary & Next Steps",
     type: "summary",
     summary: "Turn tx hashes into readable reports with verifiable evidence.",
@@ -165,7 +183,7 @@ const slides: Slide[] = [
     ],
     closing: "TXray makes on-chain forensics fast and intuitive.",
     notes:
-      "总结来说，TXray 让链上取证变得直观且快速。下一步我们将重点优化 Trace 的大列表渲染性能，并支持生成快照链接，方便社区分享交易分析结果。谢谢大家。",
+      "In summary, TXray turns tx hashes into readable reports with verifiable evidence. Next, we’ll add explorer-grade views (balance changes + logs), build shareable report links with caching, and further optimize large trace rendering performance. Thanks!",
   },
 ];
 
