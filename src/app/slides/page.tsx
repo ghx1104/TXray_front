@@ -267,7 +267,7 @@ const slides: Slide[] = [
 
 export default function SlidesPage() {
   const [currentSlide, setCurrentSlide] = useState(0);
-  const [showNotes, setShowNotes] = useState(true);
+  const [showNotes, setShowNotes] = useState(false);
   const deckRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<HTMLDivElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
