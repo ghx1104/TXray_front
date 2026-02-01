@@ -2,8 +2,12 @@
 
 import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Send, Zap, Shield, Terminal, Globe, ChevronRight, Cpu, Search, Activity, Database } from "lucide-react";
+import { Send, Zap, Shield, Terminal, Globe, ChevronRight, Cpu, Search, Activity, Database, Star } from "lucide-react";
 import ReactMarkdown from "react-markdown";
+import remarkMath from "remark-math";
+import remarkGfm from "remark-gfm";
+import rehypeKatex from "rehype-katex";
+import "katex/dist/katex.min.css";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { WorkflowVisualizer } from "@/components/WorkflowVisualizer";
@@ -11,6 +15,16 @@ import { Message, ProgressEvent } from "@/types";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { X402Client } from "@coinbase/x402";
+
+/** Normalize block math: [ \... ] and \[ ... \] -> $$ ... $$ so remark-math can parse */
+function normalizeBlockMath(content: string): string {
+  if (!content || typeof content !== "string") return content;
+  // [ \text{...} ] or [ \frac{...} ] etc. (single line)
+  let out = content.replace(/^\[\s*\\(.*?)\s*\]\s*$/gm, "$$ \\$1 $$");
+  // \[ ... \] (standard LaTeX display math)
+  out = out.replace(/\\\[\s*([\s\S]*?)\s*\\\]/g, "$$ $1 $$");
+  return out;
+}
 
 interface Conversation {
   id: string;
@@ -33,6 +47,8 @@ export default function Home() {
   } | null>(null);
   const [adminToken, setAdminToken] = useState<string>("");
   const [isAdminModalOpen, setIsAdminModalOpen] = useState(false);
+  const [feedbackModal, setFeedbackModal] = useState<{ messageId: string } | null>(null);
+  const [reputation, setReputation] = useState<{ count: number; average: number } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // Load conversations and admin token from localStorage on mount
@@ -54,7 +70,26 @@ export default function Home() {
     if (savedToken) {
       setAdminToken(savedToken);
     }
+
+    // Load reputation data
+    fetchReputation();
   }, []);
+
+  // Fetch ERC-8004 reputation
+  const fetchReputation = async () => {
+    try {
+      const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:3001";
+      const res = await fetch(`${backendUrl}/api/erc8004/reputation`);
+      if (res.ok) {
+        const { count, summaryValue } = await res.json();
+        const n = Number(count);
+        const avg = n > 0 ? Math.round(Number(summaryValue) / n) : 0;
+        setReputation({ count: n, average: avg });
+      }
+    } catch (e) {
+      console.error('Failed to fetch reputation', e);
+    }
+  };
 
   // Save admin token to localStorage
   useEffect(() => {
@@ -359,6 +394,96 @@ export default function Home() {
     });
   };
 
+  const handleSubmitFeedback = async (rating: number) => {
+    if (!feedbackModal) return;
+
+    try {
+      if (!(window as any).ethereum) {
+        toast.error("Web3 Wallet Required", {
+          description: "Please install MetaMask to submit feedback."
+        });
+        return;
+      }
+
+      const ethereum = (window as any).ethereum;
+      toast.loading("Connecting wallet...", { id: "feedback" });
+
+      const accounts = await ethereum.request({ method: 'eth_requestAccounts' });
+      const userAddress = accounts[0];
+
+      // Ensure on Ethereum Mainnet (chainId 1)
+      try {
+        await ethereum.request({
+          method: 'wallet_switchEthereumChain',
+          params: [{ chainId: '0x1' }],
+        });
+      } catch (err: any) {
+        if (err.code === 4902) {
+          toast.error("Ethereum Mainnet Required", {
+            description: "Please add Ethereum Mainnet to your wallet.",
+            id: "feedback"
+          });
+          return;
+        }
+      }
+
+      toast.loading("Getting transaction parameters...", { id: "feedback" });
+
+      // Get tx params from backend
+      const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:3001";
+      const agentId = process.env.NEXT_PUBLIC_ERC8004_AGENT_ID || "22715";
+      const res = await fetch(`${backendUrl}/api/erc8004/feedback-tx`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-ERC8004-Agent-Id': agentId
+        },
+        body: JSON.stringify({
+          agentId: agentId,
+          value: rating * 20, // Convert 1-5 stars to 20-100 scale
+          tag1: 'starred',
+          tag2: ''
+        })
+      });
+
+      if (!res.ok) {
+        throw new Error('Failed to get transaction parameters');
+      }
+
+      const { to, data, value } = await res.json();
+
+      toast.loading("Please confirm transaction in wallet...", { id: "feedback" });
+
+      // Send transaction
+      const txHash = await ethereum.request({
+        method: 'eth_sendTransaction',
+        params: [{
+          from: userAddress,
+          to: to,
+          data: data,
+          value: value || '0x0'
+        }],
+      });
+
+      toast.success("Feedback submitted!", {
+        description: `Transaction: ${txHash.slice(0, 10)}...`,
+        id: "feedback"
+      });
+
+      setFeedbackModal(null);
+      
+      // Refresh reputation after a delay
+      setTimeout(() => fetchReputation(), 3000);
+
+    } catch (error: any) {
+      console.error("Feedback submission failed:", error);
+      toast.error("Feedback Failed", {
+        description: error.message || "User rejected transaction",
+        id: "feedback"
+      });
+    }
+  };
+
   const handlePayment = async () => {
     if (!paymentRequired) return;
     
@@ -658,6 +783,66 @@ export default function Home() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Feedback Rating Modal */}
+      <AnimatePresence>
+        {feedbackModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm"
+          >
+            <motion.div
+              initial={{ scale: 0.9, y: 20 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.9, y: 20 }}
+              className="bg-[#0a0a0a] border border-white/10 rounded-[2rem] p-8 max-w-md w-full shadow-2xl relative overflow-hidden"
+            >
+              <div className="absolute -top-24 -right-24 w-48 h-48 bg-[#ffcc00]/10 blur-[80px] rounded-full" />
+              <div className="absolute -bottom-24 -left-24 w-48 h-48 bg-[#ff9900]/10 blur-[80px] rounded-full" />
+
+              <div className="relative z-10 text-center space-y-6">
+                <div className="w-20 h-20 bg-[#ffcc00]/10 rounded-3xl flex items-center justify-center mx-auto border border-[#ffcc00]/20">
+                  <Star className="text-[#ffcc00]" size={40} fill="currentColor" />
+                </div>
+
+                <div className="space-y-2">
+                  <h3 className="text-2xl font-black uppercase tracking-tighter">Rate Analysis</h3>
+                  <p className="text-white/40 text-sm font-mono uppercase tracking-widest">Your feedback improves our AI</p>
+                </div>
+
+                <div className="flex justify-center gap-3 py-4">
+                  {[1, 2, 3, 4, 5].map((stars) => (
+                    <motion.button
+                      key={stars}
+                      whileHover={{ scale: 1.1 }}
+                      whileTap={{ scale: 0.95 }}
+                      onClick={() => handleSubmitFeedback(stars)}
+                      className="w-14 h-14 rounded-xl bg-white/5 border border-white/10 hover:border-[#ffcc00]/50 hover:bg-[#ffcc00]/10 transition-all flex items-center justify-center group"
+                    >
+                      <Star size={24} className="text-white/30 group-hover:text-[#ffcc00] group-hover:fill-[#ffcc00] transition-colors" fill="none" />
+                    </motion.button>
+                  ))}
+                </div>
+
+                <div className="text-[10px] text-white/40 space-y-1">
+                  <p>1★ = Poor | 3★ = Average | 5★ = Excellent</p>
+                  <p className="text-white/20">Requires Ethereum Mainnet • Gas fee paid in ETH</p>
+                </div>
+
+                <button
+                  onClick={() => setFeedbackModal(null)}
+                  className="w-full text-white/40 py-2 text-[10px] font-bold uppercase tracking-widest hover:text-white/60 transition-all"
+                >
+                  Cancel
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       <aside className="w-64 border-r border-white/5 bg-black/40 backdrop-blur-xl flex flex-col z-50">
         <div className="p-4 border-b border-white/5 space-y-2">
           <button
@@ -728,6 +913,12 @@ export default function Home() {
           </div>
 
           <div className="hidden md:flex items-center gap-8 text-[10px] font-mono tracking-widest text-white/30 uppercase">
+            {reputation && reputation.count > 0 && (
+              <div className="flex items-center gap-2 border-r border-white/10 pr-8">
+                <Star size={14} className="text-[#ffcc00] fill-[#ffcc00]" />
+                <span>{(reputation.average / 20).toFixed(1)} / 5 ({reputation.count} reviews)</span>
+              </div>
+            )}
             <div className="flex items-center gap-2 border-r border-white/10 pr-8">
               <div className="w-2 h-2 rounded-full bg-[#00ffcc] animate-pulse" />
               <span>Node: Ethereum Mainnet</span>
@@ -828,9 +1019,13 @@ export default function Home() {
 
                       <div className="prose prose-invert max-w-none">
                         <ReactMarkdown
+                          remarkPlugins={[remarkMath, remarkGfm]}
+                          rehypePlugins={[rehypeKatex]}
                           components={{
                             code({ node, inline, className, children, ...props }: any) {
                               const match = /language-(\w+)/.exec(className || "");
+                              const raw = String(children);
+                              const isHex = /^0x[a-fA-F0-9]+$/.test(raw.trim());
                               return !inline && match ? (
                                 <SyntaxHighlighter
                                   style={vscDarkPlus as any}
@@ -839,10 +1034,16 @@ export default function Home() {
                                   className="!rounded-2xl !bg-black/60 !border !border-white/5 !p-6 !my-6"
                                   {...props}
                                 >
-                                  {String(children).replace(/\n$/, "")}
+                                  {raw.replace(/\n$/, "")}
                                 </SyntaxHighlighter>
                               ) : (
-                                <code className="bg-[#00ffcc]/10 text-[#00ffcc] px-2 py-0.5 rounded-md text-sm" {...props}>
+                                <code
+                                  className={cn(
+                                    "px-2 py-0.5 rounded-md text-sm font-mono",
+                                    isHex ? "bg-[#00ffcc]/20 text-[#00ffcc] border border-[#00ffcc]/30" : "bg-[#00ffcc]/10 text-[#00ffcc]"
+                                  )}
+                                  {...props}
+                                >
                                   {children}
                                 </code>
                               );
@@ -850,7 +1051,30 @@ export default function Home() {
                             p: ({ children }) => <p className="text-white/80 leading-relaxed mb-4 text-lg">{children}</p>,
                             h1: ({ children }) => <h1 className="text-2xl font-black text-[#00ffcc] uppercase tracking-tighter mb-6 mt-8">{children}</h1>,
                             h2: ({ children }) => <h2 className="text-xl font-black text-white uppercase tracking-tighter mb-4 mt-6">{children}</h2>,
+                            h3: ({ children }) => <h3 className="text-lg font-black text-white/90 uppercase tracking-tighter mb-3 mt-4">{children}</h3>,
                             li: ({ children }) => <li className="text-white/70 mb-2 text-lg">{children}</li>,
+                            table: ({ children }) => (
+                              <div className="overflow-x-auto my-6 rounded-2xl border border-white/10 bg-black/40">
+                                <table className="w-full border-collapse text-left">{children}</table>
+                              </div>
+                            ),
+                            thead: ({ children }) => (
+                              <thead className="bg-white/5 border-b border-white/10">{children}</thead>
+                            ),
+                            tbody: ({ children }) => <tbody className="divide-y divide-white/5">{children}</tbody>,
+                            tr: ({ children }) => (
+                              <tr className="hover:bg-white/[0.03] transition-colors">{children}</tr>
+                            ),
+                            th: ({ children }) => (
+                              <th className="px-5 py-4 text-[10px] font-bold uppercase tracking-widest text-white/50 whitespace-nowrap">
+                                {children}
+                              </th>
+                            ),
+                            td: ({ children }) => (
+                              <td className="px-5 py-4 text-sm text-white/80 font-mono">
+                                {children}
+                              </td>
+                            ),
                           }}
                         >
                           {msg.content}
@@ -861,16 +1085,30 @@ export default function Home() {
                         <motion.div
                           initial={{ opacity: 0, y: 10 }}
                           animate={{ opacity: 1, y: 0 }}
-                          className="mt-10 pt-10 border-t border-white/5 grid grid-cols-1 md:grid-cols-2 gap-6"
+                          className="mt-10 pt-10 border-t border-white/5 space-y-6"
                         >
-                          <div className="p-6 bg-white/5 rounded-2xl border border-white/5 hover:border-[#00ffcc]/30 transition-colors group">
-                            <p className="text-[10px] text-[#00ffcc] uppercase font-bold tracking-[0.2em] mb-2">Pattern Detection</p>
-                            <p className="text-3xl font-black uppercase italic tracking-tighter group-hover:scale-105 transition-transform origin-left">{msg.report.mevType}</p>
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <div className="p-6 bg-white/5 rounded-2xl border border-white/5 hover:border-[#00ffcc]/30 transition-colors group">
+                              <p className="text-[10px] text-[#00ffcc] uppercase font-bold tracking-[0.2em] mb-2">Pattern Detection</p>
+                              <p className="text-3xl font-black uppercase italic tracking-tighter group-hover:scale-105 transition-transform origin-left">{msg.report.mevType}</p>
+                            </div>
+                            <div className="p-6 bg-white/5 rounded-2xl border border-white/5 hover:border-[#ff007a]/30 transition-colors group">
+                              <p className="text-[10px] text-[#ff007a] uppercase font-bold tracking-[0.2em] mb-2">Resource Cost</p>
+                              <p className="text-3xl font-black uppercase italic tracking-tighter group-hover:scale-105 transition-transform origin-left">{msg.report.technicalDetails.gasUsed} <span className="text-sm font-light text-white/30 not-italic">GAS</span></p>
+                            </div>
                           </div>
-                          <div className="p-6 bg-white/5 rounded-2xl border border-white/5 hover:border-[#ff007a]/30 transition-colors group">
-                            <p className="text-[10px] text-[#ff007a] uppercase font-bold tracking-[0.2em] mb-2">Resource Cost</p>
-                            <p className="text-3xl font-black uppercase italic tracking-tighter group-hover:scale-105 transition-transform origin-left">{msg.report.technicalDetails.gasUsed} <span className="text-sm font-light text-white/30 not-italic">GAS</span></p>
-                          </div>
+
+                          {msg.status === 'completed' && msg.role === 'assistant' && (
+                            <div className="pt-6 border-t border-white/5">
+                              <button
+                                onClick={() => setFeedbackModal({ messageId: msg.id })}
+                                className="w-full px-6 py-4 bg-[#ffcc00]/10 hover:bg-[#ffcc00]/20 border border-[#ffcc00]/20 rounded-xl text-[#ffcc00] text-sm font-mono tracking-wider transition-all flex items-center justify-center gap-2"
+                              >
+                                <Star size={16} />
+                                Rate This Analysis
+                              </button>
+                            </div>
+                          )}
                         </motion.div>
                       )}
                     </div>
