@@ -171,10 +171,31 @@ export default function Home() {
 
       if (response.status === 402) {
         const data = await response.json();
-        setPaymentRequired({
-          ...data,
-          retryData: { text: messageText }
-        });
+
+        // Handle x402 standard response structure
+        if (data.accepts && data.accepts.length > 0) {
+          const payment = data.accepts[0];
+          // Convert maxAmountRequired (in atomic units) to human readable USDC (6 decimals)
+          const amount = (parseInt(payment.maxAmountRequired) / 1_000_000).toString();
+
+          // Use x402.sh as the payment gateway
+          const paywallUrl = `https://x402.sh/pay/${payment.payTo}?amount=${amount}&network=${payment.network}&asset=${payment.asset}&reference=${encodeURIComponent(payment.resource)}`;
+
+          setPaymentRequired({
+            amount: amount,
+            recipient: payment.payTo,
+            reference: payment.resource,
+            paywallUrl: paywallUrl,
+            retryData: { text: messageText }
+          });
+        } else {
+          // Fallback for non-standard or direct response
+          setPaymentRequired({
+            ...data,
+            retryData: { text: messageText }
+          });
+        }
+
         // Remove the loading assistant message since we need payment
         setConversations(prev => prev.map(c =>
           c.id === targetConvId
@@ -340,36 +361,140 @@ export default function Home() {
 
   const handlePayment = async () => {
     if (!paymentRequired) return;
-
+    
     try {
-      // In a real scenario, we would use the x402 SDK or open the paywallUrl
-      // For now, we'll simulate the flow by opening the paywallUrl in a new tab
-      // and providing a way for the user to "confirm" payment if the SDK isn't fully set up
+      if (!(window as any).ethereum) {
+        toast.error("Web3 Wallet Required", {
+          description: "Please install MetaMask or another Web3 wallet."
+        });
+        return;
+      }
 
-      const win = window.open(paymentRequired.paywallUrl, '_blank');
+      const ethereum = (window as any).ethereum;
+      toast.loading("Connecting wallet...", { id: "x402_pay" });
 
-      toast.info("Payment Required", {
-        description: `Please complete the payment of ${paymentRequired.amount} USDC on Base.`,
-        duration: 10000,
+      const accounts = await ethereum.request({ method: 'eth_requestAccounts' });
+      const userAddress = accounts[0];
+
+      // Ensure on Base network
+      try {
+        await ethereum.request({
+          method: 'wallet_switchEthereumChain',
+          params: [{ chainId: '0x2105' }],
+        });
+      } catch (err: any) {
+        if (err.code === 4902) {
+          await ethereum.request({
+            method: 'wallet_addEthereumChain',
+            params: [{
+              chainId: '0x2105',
+              chainName: 'Base',
+              nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 },
+              rpcUrls: ['https://mainnet.base.org'],
+              blockExplorerUrls: ['https://basescan.org']
+            }]
+          });
+        }
+      }
+
+      toast.loading("Please sign the payment authorization...", { id: "x402_pay" });
+
+      // EIP-3009 transferWithAuthorization parameters
+      const domain = {
+        name: 'USD Coin',
+        version: '2',
+        chainId: 8453, // Base
+        verifyingContract: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913' // USDC on Base
+      };
+
+      // Generate a unique nonce for this authorization
+      const nonceBytes = new Uint8Array(32);
+      crypto.getRandomValues(nonceBytes);
+      const nonce = '0x' + Array.from(nonceBytes).map(b => b.toString(16).padStart(2, '0')).join('');
+
+      const validAfter = 0;
+      const validBefore = Math.floor(Date.now() / 1000) + 3600; // Valid for 1 hour
+
+      const message = {
+        from: userAddress,
+        to: paymentRequired.recipient,
+        value: Math.floor(parseFloat(paymentRequired.amount) * 1_000_000).toString(), // Convert to atomic units
+        validAfter: validAfter.toString(),
+        validBefore: validBefore.toString(),
+        nonce: nonce
+      };
+
+      const types = {
+        EIP712Domain: [
+          { name: 'name', type: 'string' },
+          { name: 'version', type: 'string' },
+          { name: 'chainId', type: 'uint256' },
+          { name: 'verifyingContract', type: 'address' }
+        ],
+        TransferWithAuthorization: [
+          { name: 'from', type: 'address' },
+          { name: 'to', type: 'address' },
+          { name: 'value', type: 'uint256' },
+          { name: 'validAfter', type: 'uint256' },
+          { name: 'validBefore', type: 'uint256' },
+          { name: 'nonce', type: 'bytes32' }
+        ]
+      };
+
+      const typedData = {
+        types,
+        domain,
+        primaryType: 'TransferWithAuthorization',
+        message
+      };
+
+      // Request signature from user (NO GAS!)
+      const signature = await ethereum.request({
+        method: 'eth_signTypedData_v4',
+        params: [userAddress, JSON.stringify(typedData)],
       });
 
-      // Listen for message from paywall if it supports postMessage
-      const messageHandler = (event: MessageEvent) => {
-        if (event.data && event.data.type === 'x402_payment_success') {
-          const payload = event.data.payload;
-          handleSend(paymentRequired.retryData?.text, payload);
-          window.removeEventListener('message', messageHandler);
-        }
-      };
-      window.addEventListener('message', messageHandler);
+      toast.loading("Submitting to facilitator...", { id: "x402_pay" });
 
-      // For demo/development purposes: if the user manually returns after paying
-      // we might need a way to trigger the retry. 
-      // In a production app, the x402 SDK would handle this more gracefully.
+      // Submit to facilitator (openfacilitator.io)
+      const facilitatorResponse = await fetch('https://pay.openfacilitator.io/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          signature,
+          authorization: {
+            from: userAddress,
+            to: paymentRequired.recipient,
+            value: message.value,
+            validAfter: validAfter,
+            validBefore: validBefore,
+            nonce: nonce
+          },
+          chainId: 8453,
+          token: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+          resource: paymentRequired.reference
+        })
+      });
+
+      if (!facilitatorResponse.ok) {
+        const errorData = await facilitatorResponse.json().catch(() => ({}));
+        throw new Error(errorData.message || 'Facilitator verification failed');
+      }
+
+      const facilitatorData = await facilitatorResponse.json();
+      const payload = facilitatorData.payload || facilitatorData.proof || signature;
+
+      toast.success("Payment authorized!", { id: "x402_pay" });
+
+      // Retry with the facilitator's payload
+      handleSend(paymentRequired.retryData?.text, payload);
+      setPaymentRequired(null);
 
     } catch (error: any) {
-      toast.error("Payment failed", {
-        description: error.message
+      console.error("x402 payment failed:", error);
+      toast.error("Payment Authorization Failed", {
+        description: error.message || "User rejected the signature request.",
+        id: "x402_pay"
       });
     }
   };
@@ -417,6 +542,21 @@ export default function Home() {
                     <span className="text-xs text-white/40 uppercase font-bold tracking-widest">Network</span>
                     <span className="text-xs font-mono text-white/60">Base Mainnet</span>
                   </div>
+                  <div className="pt-2 border-t border-white/5">
+                    <p className="text-[10px] text-white/40 uppercase font-bold tracking-widest mb-2">Recipient Address</p>
+                    <div className="flex items-center gap-2 bg-black/40 p-3 rounded-xl border border-white/5">
+                      <code className="text-[10px] font-mono text-white/60 truncate flex-1">{paymentRequired.recipient}</code>
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(paymentRequired.recipient);
+                          toast.success("Address copied");
+                        }}
+                        className="text-[#00ffcc] hover:text-white transition-colors"
+                      >
+                        <Activity size={14} />
+                      </button>
+                    </div>
+                  </div>
                 </div>
 
                 <div className="flex flex-col gap-3 pt-4">
@@ -426,12 +566,31 @@ export default function Home() {
                   >
                     Pay with x402
                   </button>
-                  <button
-                    onClick={() => setPaymentRequired(null)}
-                    className="w-full bg-white/5 text-white/40 py-4 rounded-2xl font-bold uppercase text-xs tracking-widest hover:bg-white/10 transition-all"
-                  >
-                    Cancel
-                  </button>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => {
+                        const payload = prompt("If you've paid, enter the payment payload (JSON) here:");
+                        if (payload) {
+                          try {
+                            // Validate if it's JSON or just use as is
+                            handleSend(paymentRequired.retryData?.text, payload);
+                            setPaymentRequired(null);
+                          } catch (e) {
+                            toast.error("Invalid payload format");
+                          }
+                        }
+                      }}
+                      className="flex-1 bg-white/5 text-white/60 py-3 rounded-xl font-bold uppercase text-[10px] tracking-widest hover:bg-white/10 transition-all border border-white/5"
+                    >
+                      Manual Verify
+                    </button>
+                    <button
+                      onClick={() => setPaymentRequired(null)}
+                      className="flex-1 bg-white/5 text-white/40 py-3 rounded-xl font-bold uppercase text-[10px] tracking-widest hover:bg-white/10 transition-all border border-white/5"
+                    >
+                      Cancel
+                    </button>
+                  </div>
                 </div>
 
                 <p className="text-[9px] text-white/20 font-mono uppercase tracking-[0.2em]">
