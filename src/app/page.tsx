@@ -49,6 +49,7 @@ export default function Home() {
   const [isAdminModalOpen, setIsAdminModalOpen] = useState(false);
   const [feedbackModal, setFeedbackModal] = useState<{ messageId: string } | null>(null);
   const [reputation, setReputation] = useState<{ count: number; average: number } | null>(null);
+  const [walletAddress, setWalletAddress] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // Load conversations and admin token from localStorage on mount
@@ -74,6 +75,36 @@ export default function Home() {
     // Load reputation data
     fetchReputation();
   }, []);
+
+  // Check wallet connection on mount
+  useEffect(() => {
+    if (typeof window === "undefined" || !(window as any).ethereum) return;
+    (window as any).ethereum
+      .request({ method: "eth_accounts" })
+      .then((accounts: string[]) => {
+        if (accounts.length > 0) setWalletAddress(accounts[0]);
+      })
+      .catch(() => {});
+  }, []);
+
+  const connectWallet = async () => {
+    try {
+      if (!(window as any).ethereum) {
+        toast.error("No wallet found", { description: "Install MetaMask or another Web3 wallet." });
+        return;
+      }
+      const accounts = await (window as any).ethereum.request({ method: "eth_requestAccounts" });
+      setWalletAddress(accounts[0]);
+      toast.success("Wallet connected");
+    } catch (e: any) {
+      toast.error("Connection failed", { description: e.message });
+    }
+  };
+
+  const disconnectWallet = () => {
+    setWalletAddress(null);
+    toast.success("Wallet disconnected");
+  };
 
   // Fetch ERC-8004 reputation
   const fetchReputation = async () => {
@@ -452,7 +483,18 @@ export default function Home() {
         throw new Error(message);
       }
 
-      const { to, data, value } = await res.json();
+      const { to, data, value: rawValue } = await res.json();
+
+      // Ensure value is hex (backend may return "0" or 0)
+      let valueHex = "0x0";
+      if (rawValue != null && rawValue !== "" && rawValue !== "0") {
+        if (typeof rawValue === "string" && rawValue.startsWith("0x")) {
+          valueHex = rawValue;
+        } else {
+          const n = BigInt(rawValue);
+          valueHex = "0x" + n.toString(16);
+        }
+      }
 
       toast.loading("Please confirm transaction in wallet...", { id: "feedback" });
 
@@ -463,7 +505,7 @@ export default function Home() {
           from: userAddress,
           to: to,
           data: data,
-          value: value || '0x0'
+          value: valueHex
         }],
       });
 
@@ -479,8 +521,12 @@ export default function Home() {
 
     } catch (error: any) {
       console.error("Feedback submission failed:", error);
+      const msg = error.message || "User rejected transaction";
+      const isReject = error.code === 4001 || msg.toLowerCase().includes("reject");
       toast.error("Feedback Failed", {
-        description: error.message || "User rejected transaction",
+        description: isReject
+          ? "Transaction was rejected."
+          : msg + (msg.includes("revert") || msg.includes("execution") ? " — Make sure you're on Ethereum Mainnet and you're not the agent owner (only others can submit feedback)." : ""),
         id: "feedback"
       });
     }
@@ -921,7 +967,8 @@ export default function Home() {
             </div>
           </div>
 
-          <div className="hidden md:flex items-center gap-8 text-[10px] font-mono tracking-widest text-white/30 uppercase">
+          <div className="flex items-center gap-4 flex-wrap">
+            <div className="hidden md:flex items-center gap-8 text-[10px] font-mono tracking-widest text-white/30 uppercase">
             {reputation && reputation.count > 0 && (
               <div className="flex items-center gap-2 border-r border-white/10 pr-8">
                 <Star size={14} className="text-[#ffcc00] fill-[#ffcc00]" />
@@ -935,6 +982,39 @@ export default function Home() {
             <div className="flex items-center gap-2">
               <Shield size={14} className="text-[#00ffcc]" />
               <span>Encrypted Session</span>
+            </div>
+          </div>
+            <div className="flex items-center gap-2 ml-auto">
+              {walletAddress ? (
+                <div className="flex items-center gap-1.5 border border-white/10 rounded-lg pl-2 pr-1 py-1 bg-white/5">
+                  <span className="text-white/70 truncate max-w-[100px] md:max-w-[120px] text-[9px] md:text-[10px]">
+                    {walletAddress.slice(0, 6)}...{walletAddress.slice(-4)}
+                  </span>
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText(walletAddress);
+                      toast.success("Address copied");
+                    }}
+                    className="p-1 rounded hover:bg-white/10 text-white/50 hover:text-white transition-colors"
+                    title="Copy"
+                  >
+                    <Activity size={12} />
+                  </button>
+                  <button
+                    onClick={disconnectWallet}
+                    className="px-2 py-1 rounded bg-white/10 hover:bg-white/20 text-white/70 hover:text-white text-[9px] font-bold uppercase transition-colors"
+                  >
+                    Disconnect
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={connectWallet}
+                  className="px-4 py-2 rounded-xl bg-[#00ffcc]/10 hover:bg-[#00ffcc]/20 border border-[#00ffcc]/30 text-[#00ffcc] text-[10px] md:text-xs font-bold uppercase tracking-wider transition-all"
+                >
+                  Connect Wallet
+                </button>
+              )}
             </div>
           </div>
         </header>
