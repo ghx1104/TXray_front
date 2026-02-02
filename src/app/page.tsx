@@ -1107,6 +1107,18 @@ export default function Home() {
                       )}
 
                       <div className="prose prose-invert max-w-none">
+                        {msg.status === 'loading' ? (
+                          <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-6 min-h-[4rem]">
+                            <pre className="whitespace-pre-wrap break-words font-mono text-sm text-white/85 leading-relaxed m-0 p-0 bg-transparent border-0 text-left">
+                              {msg.content || ''}<span className="inline-block w-2 h-4 ml-0.5 bg-[#00ffcc] animate-pulse align-middle" aria-hidden />
+                            </pre>
+                          </div>
+                        ) : (
+                        <motion.div
+                          initial={{ opacity: 0.6 }}
+                          animate={{ opacity: 1 }}
+                          transition={{ duration: 0.2 }}
+                        >
                         <ReactMarkdown
                           remarkPlugins={[remarkMath, remarkGfm]}
                           rehypePlugins={[rehypeKatex]}
@@ -1168,6 +1180,8 @@ export default function Home() {
                         >
                           {normalizeBlockMath(msg.content)}
                         </ReactMarkdown>
+                        </motion.div>
+                        )}
                       </div>
 
                       {msg.report && (
